@@ -105,6 +105,19 @@ const createCheckoutIcon = (isDrift: boolean) =>
     iconAnchor: [9, 9],
   });
 
+function getSessionDateStr(started_at?: string): string {
+  if (!started_at) return "";
+  try {
+    const d = new Date(started_at);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  } catch {
+    return started_at.slice(0, 10);
+  }
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function RouteAuditTab({ selectedFoEmail, selectedDate, officers: propOfficers }: Props) {
@@ -116,6 +129,7 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate, officers:
   const [officers, setOfficers] = useState<FieldOfficerItem[]>(propOfficers || []);
   const [sessions, setSessions] = useState<OfficerSession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>("");
+  const [filterByDate, setFilterByDate] = useState<boolean>(false);
 
   // Inject Stop Dialog State
   const [injectDialogOpen, setInjectDialogOpen] = useState(false);
@@ -174,7 +188,13 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate, officers:
         const sList = res.data || [];
         setSessions(sList);
         if (sList.length > 0) {
-          setSelectedSessionId(sList[0].id);
+          // If a session matches the currently selected date, auto-select it!
+          const dateMatch = sList.find((s) => getSessionDateStr(s.started_at) === selectedDate);
+          if (dateMatch) {
+            setSelectedSessionId(dateMatch.id);
+          } else {
+            setSelectedSessionId(sList[0].id);
+          }
         } else {
           setSelectedSessionId("");
         }
@@ -184,6 +204,21 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate, officers:
         setSelectedSessionId("");
       });
   }, [targetUserId]);
+
+  // Synchronize selected session when user changes selectedDate in top bar
+  useEffect(() => {
+    if (sessions.length === 0) return;
+    const dateMatch = sessions.find((s) => getSessionDateStr(s.started_at) === selectedDate);
+    if (dateMatch) {
+      setSelectedSessionId(dateMatch.id);
+    } else {
+      // If current session does not exist in sessions, fall back to first
+      const exists = sessions.some((s) => s.id === selectedSessionId);
+      if (!exists) {
+        setSelectedSessionId(sessions[0].id);
+      }
+    }
+  }, [selectedDate, sessions]);
 
   // 3. Fetch route audit & GPS points
   useEffect(() => {
@@ -262,6 +297,20 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate, officers:
   const polylinePositions: [number, number][] =
     audit?.location_points?.map((p) => [p.lat, p.lng]) ?? [];
 
+  const sessionsOnSelectedDate = sessions.filter(
+    (s) => getSessionDateStr(s.started_at) === selectedDate
+  );
+
+  const displayedSessions = filterByDate ? sessionsOnSelectedDate : sessions;
+
+  const selectedSession = sessions.find((s) => s.id === selectedSessionId);
+  const selectedSessionDate = selectedSession ? getSessionDateStr(selectedSession.started_at) : "";
+  const isDateMismatch = Boolean(
+    selectedSession &&
+    selectedSessionDate !== selectedDate &&
+    sessions.length > 0
+  );
+
   return (
     <Box>
       {selectedFoEmail === "all" && (
@@ -272,6 +321,12 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate, officers:
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
+      {isDateMismatch && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <strong>Date Inactivity Notice:</strong> No GPS sessions were recorded in the AURA app on <strong>{selectedDate}</strong> (officer was inactive or tracking was not started). Showing latest available session from <strong>{new Date(selectedSession!.started_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</strong> ({selectedSession!.session_label || `Session #${selectedSession!.session_number}`}).
+        </Alert>
+      )}
+
       <Grid container spacing={2}>
         {/* ── Left Pane: Side-by-Side Comparison Timeline (40% width) ──── */}
         <Grid item xs={12} md={5}>
@@ -280,20 +335,79 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate, officers:
               {/* Session Selector if officer has tracked sessions */}
               {sessions.length > 0 && (
                 <Box mb={2}>
-                  <TextField
-                    select
-                    size="small"
-                    fullWidth
-                    label="Recorded GPS Session (AURA App)"
-                    value={selectedSessionId}
-                    onChange={(e) => setSelectedSessionId(e.target.value)}
-                  >
-                    {sessions.map((s) => (
-                      <MenuItem key={s.id} value={s.id}>
-                        Session #{s.session_number} ({s.total_distance_km || 0} km, {s.status}) - {new Date(s.started_at).toLocaleDateString()}
-                      </MenuItem>
-                    ))}
-                  </TextField>
+                  <Box display="flex" alignItems="center" justifyContent="space-between" mb={1} flexWrap="wrap" gap={0.5}>
+                    <Typography variant="caption" fontWeight={700} color="text.secondary">
+                      Recorded GPS Sessions ({sessions.length})
+                    </Typography>
+                    <Box display="flex" gap={0.5}>
+                      <Chip
+                        label={`All (${sessions.length})`}
+                        size="small"
+                        color={!filterByDate ? "primary" : "default"}
+                        variant={!filterByDate ? "filled" : "outlined"}
+                        onClick={() => setFilterByDate(false)}
+                        clickable
+                        sx={{ fontSize: "11px", height: "22px" }}
+                      />
+                      <Chip
+                        label={`${selectedDate} (${sessionsOnSelectedDate.length})`}
+                        size="small"
+                        color={filterByDate ? "primary" : "default"}
+                        variant={filterByDate ? "filled" : "outlined"}
+                        onClick={() => setFilterByDate(true)}
+                        clickable
+                        sx={{ fontSize: "11px", height: "22px" }}
+                      />
+                    </Box>
+                  </Box>
+
+                  {filterByDate && displayedSessions.length === 0 ? (
+                    <Alert severity="info" sx={{ py: 0.5, px: 1.5, fontSize: "12px", mb: 1 }}>
+                      No sessions on {selectedDate}.{" "}
+                      <Button size="small" sx={{ p: 0, minWidth: "auto", fontSize: "12px" }} onClick={() => setFilterByDate(false)}>
+                        View All
+                      </Button>
+                    </Alert>
+                  ) : (
+                    <TextField
+                      select
+                      size="small"
+                      fullWidth
+                      label="Recorded GPS Session (AURA App)"
+                      value={selectedSessionId}
+                      onChange={(e) => setSelectedSessionId(e.target.value)}
+                    >
+                      {displayedSessions.map((s) => {
+                        const sDate = new Date(s.started_at).toLocaleDateString("en-IN", {
+                          day: "numeric",
+                          month: "short",
+                          year: "numeric",
+                        });
+                        const sTime = new Date(s.started_at).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        });
+                        const isMatch = getSessionDateStr(s.started_at) === selectedDate;
+                        return (
+                          <MenuItem key={s.id} value={s.id}>
+                            <Box display="flex" justifyContent="space-between" width="100%" alignItems="center" gap={1}>
+                              <Typography variant="body2" fontWeight={isMatch ? 700 : 400}>
+                                {s.session_label || `Session #${s.session_number}`} ({s.total_distance_km || 0} km, {s.status})
+                              </Typography>
+                              <Box display="flex" alignItems="center" gap={0.5}>
+                                <Typography variant="caption" color="text.secondary">
+                                  {sDate} {sTime}
+                                </Typography>
+                                {isMatch && (
+                                  <Chip label="Selected Date" size="small" color="success" sx={{ height: 16, fontSize: "10px" }} />
+                                )}
+                              </Box>
+                            </Box>
+                          </MenuItem>
+                        );
+                      })}
+                    </TextField>
+                  )}
                 </Box>
               )}
 
@@ -523,10 +637,17 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate, officers:
         <Grid item xs={12} md={7}>
           <Card sx={{ height: "100%", minHeight: 520, display: "flex", flexDirection: "column" }}>
             <CardContent sx={{ p: 1, flex: 1, display: "flex", flexDirection: "column" }}>
-              <Box display="flex" justifyContent="space-between" alignItems="center" px={1} py={0.5}>
-                <Typography variant="subtitle2" fontWeight={700}>
-                  Live GPS Route &amp; Geofence Verification Map
-                </Typography>
+              <Box display="flex" justifyContent="space-between" alignItems="center" px={1} py={0.5} flexWrap="wrap" gap={1}>
+                <Box>
+                  <Typography variant="subtitle2" fontWeight={700}>
+                    Live GPS Route &amp; Geofence Verification Map
+                  </Typography>
+                  {selectedSession && (
+                    <Typography variant="caption" color="text.secondary">
+                      Active: {selectedSession.session_label || `Session #${selectedSession.session_number}`} · {new Date(selectedSession.started_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })} ({selectedSession.total_distance_km || 0} km, {selectedSession.status})
+                    </Typography>
+                  )}
+                </Box>
                 <Box display="flex" gap={1}>
                   <Chip size="small" label="Blue: Planned" sx={{ bgcolor: "#1976d2", color: "white" }} />
                   <Chip size="small" label="Green: Checked-In" sx={{ bgcolor: "#2e7d32", color: "white" }} />
