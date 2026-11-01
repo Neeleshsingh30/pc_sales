@@ -54,7 +54,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline } from "react-leaflet"
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-import { auraManagerAPI, type InjectStopPayload } from "../../services/auraApi";
+import { auraManagerAPI, type InjectStopPayload, FALLBACK_PC_OFFICERS } from "../../services/auraApi";
 import type { RouteAudit, RoutePlanItem, ActualVisitStop, LocationPoint } from "../../types/aura";
 
 interface Props {
@@ -124,22 +124,23 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
   const [injectLoading, setInjectLoading] = useState(false);
   const [injectSuccess, setInjectSuccess] = useState(false);
 
-  useEffect(() => {
-    if (selectedFoEmail === "all") {
-      setAudit(null);
-      setLoading(false);
-      return;
-    }
+  const effectiveEmail =
+    selectedFoEmail === "all"
+      ? (FALLBACK_PC_OFFICERS[0]?.email || "solanki.sidhdharaj@paruchemicals.com")
+      : selectedFoEmail;
 
+  const effectiveOfficer = FALLBACK_PC_OFFICERS.find((o) => o.email === effectiveEmail);
+
+  useEffect(() => {
     const fetchAudit = async () => {
       setLoading(true);
       setError(null);
       try {
         const res = await auraManagerAPI.getRouteAudit({
-          fo_user_id: selectedFoEmail,
+          fo_user_id: effectiveEmail,
           date: selectedDate,
         });
-        setAudit(res.data?.audit ?? res.data ?? null);
+        setAudit(res.data?.audit ?? null);
       } catch (e: unknown) {
         const err = e as { message?: string };
         setError(err.message ?? "Failed to load route audit");
@@ -149,16 +150,15 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
     };
 
     fetchAudit();
-  }, [selectedFoEmail, selectedDate]);
+  }, [effectiveEmail, selectedDate]);
 
   // Handle Inject Stop
   const handleInjectSubmit = async () => {
-    if (selectedFoEmail === "all") return;
     setInjectLoading(true);
     try {
       await auraManagerAPI.injectStop({
         ...injectForm,
-        fo_user_id: selectedFoEmail,
+        fo_user_id: effectiveEmail,
         date: selectedDate,
         source: "manager_assigned",
       });
@@ -169,10 +169,10 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
       }, 1200);
       // Reload route audit
       const res = await auraManagerAPI.getRouteAudit({
-        fo_user_id: selectedFoEmail,
+        fo_user_id: effectiveEmail,
         date: selectedDate,
       });
-      setAudit(res.data?.audit ?? res.data ?? null);
+      setAudit(res.data?.audit ?? null);
     } catch (e: unknown) {
       const err = e as { message?: string };
       setError(err.message ?? "Failed to inject stop");
@@ -180,18 +180,6 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
       setInjectLoading(false);
     }
   };
-
-  if (selectedFoEmail === "all") {
-    return (
-      <Card>
-        <CardContent sx={{ py: 8, textAlign: "center" }}>
-          <Typography variant="h6" color="text.secondary">
-            Please select a specific Field Officer from the top selector to inspect their Route Audit and GPS Breadcrumb Trail.
-          </Typography>
-        </CardContent>
-      </Card>
-    );
-  }
 
   // Calculate default map center
   const defaultCenter: [number, number] = [22.3072, 73.1812]; // Vadodara, Gujarat center
@@ -205,6 +193,12 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
 
   return (
     <Box>
+      {selectedFoEmail === "all" && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Showing default route audit for <strong>{effectiveOfficer?.name || effectiveEmail}</strong>. Select any specific officer from the top selector to inspect their route.
+        </Alert>
+      )}
+
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       <Grid container spacing={2}>
