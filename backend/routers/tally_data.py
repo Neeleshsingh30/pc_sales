@@ -15,6 +15,7 @@ Authentication:
 
 import hmac
 import os
+import re
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -318,12 +319,16 @@ def list_vouchers(
         if date_to:
             query = query.lte("date", date_to)
         if search:
-            query = query.or_(
-                f"voucher_no.ilike.%{search}%,"
-                f"customer_name.ilike.%{search}%,"
-                f"narration.ilike.%{search}%,"
-                f"particulars.ilike.%{search}%"
-            )
+            # PostgREST or_() syntax breaks when search contains parentheses, commas, quotes or backslashes
+            safe_search = re.sub(r'[,()"\\]', ' ', search.strip()).strip()
+            safe_search = re.sub(r'\s+', ' ', safe_search)
+            if safe_search:
+                query = query.or_(
+                    f"voucher_no.ilike.%{safe_search}%,"
+                    f"customer_name.ilike.%{safe_search}%,"
+                    f"narration.ilike.%{safe_search}%,"
+                    f"particulars.ilike.%{safe_search}%"
+                )
 
         desc_order = False if order and order.strip().lower() == "asc" else True
         offset = (page - 1) * page_size

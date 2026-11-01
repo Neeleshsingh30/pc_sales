@@ -304,6 +304,7 @@ export default function TallyData() {
       filtered = filtered.filter(
         (v) =>
           (v.voucher_no || "").toLowerCase().includes(q) ||
+          (v.customer_name || "").toLowerCase().includes(q) ||
           (v.particulars || "").toLowerCase().includes(q) ||
           (v.narration || "").toLowerCase().includes(q) ||
           (v.items_summary || "").toLowerCase().includes(q)
