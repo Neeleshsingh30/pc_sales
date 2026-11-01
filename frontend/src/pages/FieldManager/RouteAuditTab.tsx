@@ -41,6 +41,7 @@ import {
   Divider,
   Stack,
   Tooltip,
+  MenuItem,
 } from "@mui/material";
 import {
   AddLocationAlt as InjectIcon,
@@ -54,8 +55,8 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline } from "react-leaflet"
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-import { auraManagerAPI, type InjectStopPayload, FALLBACK_PC_OFFICERS } from "../../services/auraApi";
-import type { RouteAudit, RoutePlanItem, ActualVisitStop, LocationPoint } from "../../types/aura";
+import { auraManagerAPI, type InjectStopPayload } from "../../services/auraApi";
+import type { RouteAudit, RoutePlanItem, ActualVisitStop, LocationPoint, OfficerSession, FieldOfficerItem } from "../../types/aura";
 
 interface Props {
   selectedFoEmail: string | "all";
@@ -110,6 +111,11 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Officers & Sessions from live AURA
+  const [officers, setOfficers] = useState<FieldOfficerItem[]>([]);
+  const [sessions, setSessions] = useState<OfficerSession[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string>("");
+
   // Inject Stop Dialog State
   const [injectDialogOpen, setInjectDialogOpen] = useState(false);
   const [injectForm, setInjectForm] = useState<InjectStopPayload>({
@@ -124,14 +130,44 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
   const [injectLoading, setInjectLoading] = useState(false);
   const [injectSuccess, setInjectSuccess] = useState(false);
 
+  // 1. Fetch real officers from AURA
+  useEffect(() => {
+    auraManagerAPI.getOfficersList().then((res) => {
+      const list = res.data?.field_officers || [];
+      setOfficers(list);
+    }).catch(() => {});
+  }, []);
+
   const effectiveEmail =
     selectedFoEmail === "all"
-      ? (FALLBACK_PC_OFFICERS[0]?.email || "solanki.sidhdharaj@paruchemicals.com")
+      ? (officers[0]?.email || officers[0]?.user_id || "")
       : selectedFoEmail;
 
-  const effectiveOfficer = FALLBACK_PC_OFFICERS.find((o) => o.email === effectiveEmail);
+  const currentOfficer = officers.find((o) => o.email === effectiveEmail || o.user_id === effectiveEmail);
 
+  // 2. Fetch recorded sessions for officer
   useEffect(() => {
+    if (!effectiveEmail && officers.length === 0) return;
+    const targetUserId = currentOfficer?.user_id || effectiveEmail;
+    if (targetUserId) {
+      auraManagerAPI.getOfficerSessions(targetUserId).then((res) => {
+        const sList = res.data || [];
+        setSessions(sList);
+        if (sList.length > 0) {
+          setSelectedSessionId(sList[0].id);
+        } else {
+          setSelectedSessionId("");
+        }
+      }).catch(() => {
+        setSessions([]);
+        setSelectedSessionId("");
+      });
+    }
+  }, [effectiveEmail, currentOfficer?.user_id, officers.length]);
+
+  // 3. Fetch route audit & GPS points
+  useEffect(() => {
+    if (!effectiveEmail && officers.length === 0) return;
     const fetchAudit = async () => {
       setLoading(true);
       setError(null);
@@ -139,6 +175,7 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
         const res = await auraManagerAPI.getRouteAudit({
           fo_user_id: effectiveEmail,
           date: selectedDate,
+          session_id: selectedSessionId || undefined,
         });
         setAudit(res.data?.audit ?? null);
       } catch (e: unknown) {
@@ -150,7 +187,7 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
     };
 
     fetchAudit();
-  }, [effectiveEmail, selectedDate]);
+  }, [effectiveEmail, selectedDate, selectedSessionId, officers.length]);
 
   // Handle Inject Stop
   const handleInjectSubmit = async () => {
@@ -171,6 +208,7 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
       const res = await auraManagerAPI.getRouteAudit({
         fo_user_id: effectiveEmail,
         date: selectedDate,
+        session_id: selectedSessionId || undefined,
       });
       setAudit(res.data?.audit ?? null);
     } catch (e: unknown) {
@@ -184,8 +222,8 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
   // Calculate default map center
   const defaultCenter: [number, number] = [22.3072, 73.1812]; // Vadodara, Gujarat center
   const mapCenter: [number, number] =
-    audit?.planned_stops?.[0]?.lat && audit?.planned_stops?.[0]?.lng
-      ? [audit.planned_stops[0].lat, audit.planned_stops[0].lng]
+    audit?.location_points && audit.location_points.length > 0
+      ? [audit.location_points[0].lat, audit.location_points[0].lng]
       : defaultCenter;
 
   const polylinePositions: [number, number][] =
@@ -195,7 +233,7 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
     <Box>
       {selectedFoEmail === "all" && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          Showing default route audit for <strong>{effectiveOfficer?.name || effectiveEmail}</strong>. Select any specific officer from the top selector to inspect their route.
+          Showing default route audit for <strong>{currentOfficer?.name || effectiveEmail}</strong>. Select any specific officer from the top selector to inspect their route.
         </Alert>
       )}
 
@@ -206,11 +244,31 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
         <Grid item xs={12} md={5}>
           <Card sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
             <CardContent sx={{ flex: 1 }}>
+              {/* Session Selector if officer has tracked sessions */}
+              {sessions.length > 0 && (
+                <Box mb={2}>
+                  <TextField
+                    select
+                    size="small"
+                    fullWidth
+                    label="Recorded GPS Session (AURA App)"
+                    value={selectedSessionId}
+                    onChange={(e) => setSelectedSessionId(e.target.value)}
+                  >
+                    {sessions.map((s) => (
+                      <MenuItem key={s.id} value={s.id}>
+                        Session #{s.session_number} ({s.total_distance_km || 0} km, {s.status}) - {new Date(s.started_at).toLocaleDateString()}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Box>
+              )}
+
               {/* Header Badges */}
               <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1} mb={2}>
                 <Box display="flex" gap={1} alignItems="center">
                   <Chip
-                    label={audit?.plan_status ? `Plan: ${audit.plan_status.toUpperCase()}` : "Plan: PENDING"}
+                    label={audit?.plan_status ? `Plan: ${audit.plan_status.toUpperCase()}` : "Plan: RECORDED"}
                     color={audit?.plan_status === "locked" ? "success" : "info"}
                     size="small"
                   />
@@ -218,6 +276,13 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
                     <Chip
                       label={`Rev #${audit.edit_revision_number ?? 2} - Edited`}
                       color="warning"
+                      size="small"
+                    />
+                  )}
+                  {audit?.location_points && audit.location_points.length > 0 && (
+                    <Chip
+                      label={`${audit.location_points.length} GPS Points`}
+                      color="primary"
                       size="small"
                     />
                   )}
@@ -378,11 +443,43 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
                       </Paper>
                     ))}
 
-                  {(!audit?.planned_stops || audit.planned_stops.length === 0) && (
-                    <Typography variant="body2" color="text.secondary" py={2}>
-                      No route plan submitted for this date.
-                    </Typography>
-                  )}
+                  {/* Tracked Session Stops */}
+                  {(audit?.actual_stops ?? [])
+                    .filter((a) => a.status !== "adhoc")
+                    .map((actual, idx) => (
+                      <Paper
+                        key={actual.customer_id || idx}
+                        variant="outlined"
+                        sx={{
+                          p: 1.5,
+                          borderLeft: "4px solid #2e7d32",
+                          bgcolor: "rgba(46, 125, 50, 0.04)",
+                        }}
+                      >
+                        <Box display="flex" justifyContent="space-between" alignItems="flex-start">
+                          <Box>
+                            <Typography variant="body2" fontWeight={700}>
+                              {actual.customer_name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" display="block">
+                              Time: {actual.checkin_time} {actual.checkout_time ? `– ${actual.checkout_time}` : ""} · {actual.duration_minutes ?? 0} mins
+                            </Typography>
+                          </Box>
+                          <Chip
+                            label="🟢 Live Tracked"
+                            size="small"
+                            sx={{ bgcolor: "#2e7d32", color: "white" }}
+                          />
+                        </Box>
+                      </Paper>
+                    ))}
+
+                  {(!audit?.planned_stops || audit.planned_stops.length === 0) &&
+                    (!audit?.actual_stops || audit.actual_stops.length === 0) && (
+                      <Typography variant="body2" color="text.secondary" py={2}>
+                        No route plan or field session recorded for this date.
+                      </Typography>
+                    )}
                 </Stack>
               )}
             </CardContent>
@@ -513,6 +610,49 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
                       </React.Fragment>
                     );
                   })}
+
+                  {/* Start Point Marker for Tracked Route */}
+                  {audit?.location_points && audit.location_points.length > 0 && (
+                    <Marker
+                      position={[audit.location_points[0].lat, audit.location_points[0].lng]}
+                      icon={createCheckinIcon()}
+                    >
+                      <Popup>
+                        <Typography variant="subtitle2" fontWeight={700}>
+                          🟢 Route Start Location
+                        </Typography>
+                        <Typography variant="caption" display="block">
+                          Time: {new Date(audit.location_points[0].timestamp).toLocaleTimeString()}
+                        </Typography>
+                        <Typography variant="caption" display="block">
+                          GPS: {audit.location_points[0].lat.toFixed(5)}, {audit.location_points[0].lng.toFixed(5)}
+                        </Typography>
+                      </Popup>
+                    </Marker>
+                  )}
+
+                  {/* Latest/End Point Marker for Tracked Route */}
+                  {audit?.location_points && audit.location_points.length > 1 && (
+                    <Marker
+                      position={[
+                        audit.location_points[audit.location_points.length - 1].lat,
+                        audit.location_points[audit.location_points.length - 1].lng,
+                      ]}
+                      icon={createCheckoutIcon(false)}
+                    >
+                      <Popup>
+                        <Typography variant="subtitle2" fontWeight={700}>
+                          🏁 Latest / End Location
+                        </Typography>
+                        <Typography variant="caption" display="block">
+                          Time: {new Date(audit.location_points[audit.location_points.length - 1].timestamp).toLocaleTimeString()}
+                        </Typography>
+                        <Typography variant="caption" display="block">
+                          GPS: {audit.location_points[audit.location_points.length - 1].lat.toFixed(5)}, {audit.location_points[audit.location_points.length - 1].lng.toFixed(5)}
+                        </Typography>
+                      </Popup>
+                    </Marker>
+                  )}
                 </MapContainer>
               </Box>
             </CardContent>

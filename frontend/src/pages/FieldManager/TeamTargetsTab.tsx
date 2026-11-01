@@ -248,7 +248,7 @@ export default function TeamTargetsTab({ selectedFoEmail, selectedMonth, onViewR
         setOfficers(data);
       } catch (e: unknown) {
         const err = e as { message?: string };
-        setError(err.message ?? "Failed to load officers");
+        setError(err.message ?? "Failed to load officers from AURA");
       } finally {
         setLoading(false);
       }

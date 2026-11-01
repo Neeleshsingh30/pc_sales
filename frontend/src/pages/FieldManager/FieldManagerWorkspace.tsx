@@ -41,7 +41,7 @@ import DiscountAnalyticsTab from "./DiscountAnalyticsTab";
 import EditAuditLogTab from "./EditAuditLogTab";
 import StockApprovalTab from "./StockApprovalTab";
 
-import { auraManagerAPI, FALLBACK_PC_OFFICERS } from "../../services/auraApi";
+import { auraManagerAPI } from "../../services/auraApi";
 import type { FieldOfficerItem, RecentActivityItem } from "../../types/aura";
 
 export default function FieldManagerWorkspace() {
@@ -50,20 +50,20 @@ export default function FieldManagerWorkspace() {
   const [selectedMonth, setSelectedMonth] = useState<string>(format(new Date(), "yyyy-MM"));
   const [selectedDate, setSelectedDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
 
-  const [officers, setOfficers] = useState<FieldOfficerItem[]>(FALLBACK_PC_OFFICERS);
+  const [officers, setOfficers] = useState<FieldOfficerItem[]>([]);
   const [recentActivities, setRecentActivities] = useState<RecentActivityItem[]>([]);
   const [notifAnchor, setNotifAnchor] = useState<null | HTMLElement>(null);
   const [alertsCount, setAlertsCount] = useState<number>(0);
 
-  // Fetch officers for selector dropdown
+  // Fetch real officers directly from AURA backend
   const loadOfficers = async () => {
     try {
-      const res = await auraManagerAPI.getOfficersList(selectedMonth);
+      const res = await auraManagerAPI.getOfficersList();
       const data: FieldOfficerItem[] = res.data?.field_officers ?? [];
-      setOfficers(data.length > 0 ? data : FALLBACK_PC_OFFICERS);
+      setOfficers(data);
     } catch (e) {
-      console.warn("Could not load officers for dropdown", e);
-      setOfficers(FALLBACK_PC_OFFICERS);
+      console.warn("Could not load officers from AURA", e);
+      setOfficers([]);
     }
   };
 
@@ -138,8 +138,8 @@ export default function FieldManagerWorkspace() {
                   <em>All My Officers ({officers.length})</em>
                 </MenuItem>
                 {officers.map((fo) => (
-                  <MenuItem key={fo.email} value={fo.email}>
-                    {fo.name} ({fo.email})
+                  <MenuItem key={fo.user_id || fo.email} value={fo.email || fo.user_id}>
+                    {fo.name} ({fo.email || fo.user_id})
                   </MenuItem>
                 ))}
               </TextField>

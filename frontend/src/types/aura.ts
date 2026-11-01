@@ -397,9 +397,23 @@ export interface FieldOfficerItem {
   user_id: string;
   email: string;
   name: string;
-  mobile: string;
-  role: string;
-  is_active: boolean;
+  mobile?: string;
+  role?: string;
+  is_active?: boolean;
+  status?: string;
+  today_distance_km?: number;
+  total_distance_km?: number;
+  sessions_count_today?: number;
+  total_sessions_count?: number;
+  last_active_at?: string;
+  latest_session_id?: string;
+  last_location?: {
+    latitude: number;
+    longitude: number;
+    recorded_at?: string;
+    accuracy_m?: number;
+    speed_mps?: number;
+  };
   current_month_stats?: {
     total_visits: number;
     total_orders: number;
@@ -413,6 +427,39 @@ export interface FieldOfficerItem {
     target_visits: number;
     achievement_percent: number;
   };
+}
+
+export interface OfficerSession {
+  id: string;
+  session_number: number;
+  session_label?: string;
+  started_at: string;
+  ended_at?: string | null;
+  duration_seconds?: number;
+  total_distance_km?: number;
+  status: "active" | "completed" | "paused" | string;
+}
+
+export interface SessionRoutePoint {
+  id?: string;
+  latitude: number;
+  longitude: number;
+  recorded_at: string;
+  accuracy_m?: number;
+  speed_mps?: number;
+  altitude_m?: number;
+}
+
+export interface SessionRouteResponse {
+  session_id: string;
+  started_at: string;
+  ended_at?: string | null;
+  total_distance_km: number;
+  stored_distance_km?: number;
+  computed_distance_km?: number;
+  status: string;
+  point_count: number;
+  points: SessionRoutePoint[];
 }
 
 export interface SetTargetRequest {
@@ -531,6 +578,19 @@ export interface FieldOfficer {
   total_duration_hours?: number;
   discounts_given?: number;
   active_visit_customer?: string;
+  today_distance_km?: number;
+  total_distance_km?: number;
+  sessions_count_today?: number;
+  total_sessions_count?: number;
+  last_active_at?: string;
+  latest_session_id?: string;
+  last_location?: {
+    latitude: number;
+    longitude: number;
+    recorded_at?: string;
+    accuracy_m?: number;
+    speed_mps?: number;
+  };
 }
 
 export interface TeamKPI {
