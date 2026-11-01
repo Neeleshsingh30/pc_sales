@@ -55,12 +55,13 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline } from "react-leaflet"
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-import { auraManagerAPI, type InjectStopPayload } from "../../services/auraApi";
+import { auraManagerAPI, isUUID, type InjectStopPayload } from "../../services/auraApi";
 import type { RouteAudit, RoutePlanItem, ActualVisitStop, LocationPoint, OfficerSession, FieldOfficerItem } from "../../types/aura";
 
 interface Props {
   selectedFoEmail: string | "all";
   selectedDate: string; // "YYYY-MM-DD"
+  officers?: FieldOfficerItem[];
 }
 
 // ─── Distance Calculation (Haversine formula in meters) ────────────────────────
@@ -106,13 +107,13 @@ const createCheckoutIcon = (isDrift: boolean) =>
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) {
+export default function RouteAuditTab({ selectedFoEmail, selectedDate, officers: propOfficers }: Props) {
   const [audit, setAudit] = useState<RouteAudit | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Officers & Sessions from live AURA
-  const [officers, setOfficers] = useState<FieldOfficerItem[]>([]);
+  const [officers, setOfficers] = useState<FieldOfficerItem[]>(propOfficers || []);
   const [sessions, setSessions] = useState<OfficerSession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>("");
 
@@ -130,27 +131,46 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
   const [injectLoading, setInjectLoading] = useState(false);
   const [injectSuccess, setInjectSuccess] = useState(false);
 
-  // 1. Fetch real officers from AURA
+  // 1. Sync officers if passed as prop, otherwise fetch from AURA
   useEffect(() => {
-    auraManagerAPI.getOfficersList().then((res) => {
-      const list = res.data?.field_officers || [];
-      setOfficers(list);
-    }).catch(() => {});
-  }, []);
+    if (propOfficers && propOfficers.length > 0) {
+      setOfficers(propOfficers);
+    } else {
+      auraManagerAPI
+        .getOfficersList()
+        .then((res) => {
+          const list = res.data?.field_officers || [];
+          setOfficers(list);
+        })
+        .catch(() => {});
+    }
+  }, [propOfficers]);
 
   const effectiveEmail =
     selectedFoEmail === "all"
-      ? (officers[0]?.email || officers[0]?.user_id || "")
+      ? officers[0]?.email || officers[0]?.user_id || ""
       : selectedFoEmail;
 
-  const currentOfficer = officers.find((o) => o.email === effectiveEmail || o.user_id === effectiveEmail);
+  const currentOfficer = officers.find(
+    (o) =>
+      (o.email && o.email.toLowerCase() === effectiveEmail.toLowerCase()) ||
+      (o.user_id && o.user_id.toLowerCase() === effectiveEmail.toLowerCase())
+  );
 
-  // 2. Fetch recorded sessions for officer
+  // Only consider targetUserId valid if it's already a UUID or resolved from currentOfficer
+  const targetUserId = currentOfficer?.user_id || (isUUID(effectiveEmail) ? effectiveEmail : "");
+
+  // 2. Fetch recorded sessions for officer (only when targetUserId is a valid UUID)
   useEffect(() => {
-    if (!effectiveEmail && officers.length === 0) return;
-    const targetUserId = currentOfficer?.user_id || effectiveEmail;
-    if (targetUserId) {
-      auraManagerAPI.getOfficerSessions(targetUserId).then((res) => {
+    if (!targetUserId) {
+      setSessions([]);
+      setSelectedSessionId("");
+      return;
+    }
+
+    auraManagerAPI
+      .getOfficerSessions(targetUserId)
+      .then((res) => {
         const sList = res.data || [];
         setSessions(sList);
         if (sList.length > 0) {
@@ -158,36 +178,49 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
         } else {
           setSelectedSessionId("");
         }
-      }).catch(() => {
+      })
+      .catch(() => {
         setSessions([]);
         setSelectedSessionId("");
       });
-    }
-  }, [effectiveEmail, currentOfficer?.user_id, officers.length]);
+  }, [targetUserId]);
 
   // 3. Fetch route audit & GPS points
   useEffect(() => {
-    if (!effectiveEmail && officers.length === 0) return;
+    if (!targetUserId && !effectiveEmail) return;
+
+    let isCurrent = true;
+
     const fetchAudit = async () => {
       setLoading(true);
       setError(null);
       try {
         const res = await auraManagerAPI.getRouteAudit({
-          fo_user_id: effectiveEmail,
+          fo_user_id: targetUserId || effectiveEmail,
           date: selectedDate,
           session_id: selectedSessionId || undefined,
         });
-        setAudit(res.data?.audit ?? null);
+        if (isCurrent) {
+          setAudit(res.data?.audit ?? null);
+        }
       } catch (e: unknown) {
-        const err = e as { message?: string };
-        setError(err.message ?? "Failed to load route audit");
+        if (isCurrent) {
+          const err = e as { message?: string };
+          setError(err.message ?? "Failed to load route audit");
+        }
       } finally {
-        setLoading(false);
+        if (isCurrent) {
+          setLoading(false);
+        }
       }
     };
 
     fetchAudit();
-  }, [effectiveEmail, selectedDate, selectedSessionId, officers.length]);
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [targetUserId, effectiveEmail, selectedDate, selectedSessionId]);
 
   // Handle Inject Stop
   const handleInjectSubmit = async () => {
@@ -195,7 +228,7 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
     try {
       await auraManagerAPI.injectStop({
         ...injectForm,
-        fo_user_id: effectiveEmail,
+        fo_user_id: targetUserId || effectiveEmail,
         date: selectedDate,
         source: "manager_assigned",
       });
@@ -206,7 +239,7 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
       }, 1200);
       // Reload route audit
       const res = await auraManagerAPI.getRouteAudit({
-        fo_user_id: effectiveEmail,
+        fo_user_id: targetUserId || effectiveEmail,
         date: selectedDate,
         session_id: selectedSessionId || undefined,
       });
@@ -293,7 +326,7 @@ export default function RouteAuditTab({ selectedFoEmail, selectedDate }: Props) 
                   startIcon={<InjectIcon />}
                   onClick={() => {
                     setInjectForm({
-                      fo_user_id: selectedFoEmail,
+                      fo_user_id: targetUserId || effectiveEmail,
                       date: selectedDate,
                       customer_id: "",
                       customer_name: "",

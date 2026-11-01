@@ -262,6 +262,7 @@ export default function FieldManagerWorkspace() {
         <RouteAuditTab
           selectedFoEmail={selectedFoEmail}
           selectedDate={selectedDate}
+          officers={officers}
         />
       )}
 

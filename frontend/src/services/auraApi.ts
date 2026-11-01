@@ -243,6 +243,55 @@ auraClient.interceptors.response.use(
 
 // ─── Real Field Officers Live Mapper (Zero Mock Data) ─────────────────────────
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUUID(str?: string | null): boolean {
+  if (!str) return false;
+  return UUID_REGEX.test(str.trim());
+}
+
+let cachedOfficersList: any[] | null = null;
+let cachedOfficersPromise: Promise<any[]> | null = null;
+
+export async function resolveOfficerUserId(userIdOrEmail?: string | null): Promise<string | null> {
+  if (!userIdOrEmail) return null;
+  const trimmed = userIdOrEmail.trim();
+  if (isUUID(trimmed)) {
+    return trimmed;
+  }
+
+  // Not a UUID: lookup from /admin/officers
+  try {
+    if (!cachedOfficersList) {
+      if (!cachedOfficersPromise) {
+        cachedOfficersPromise = auraClient.get<any[]>("/admin/officers").then((res) => {
+          cachedOfficersList = Array.isArray(res.data) ? res.data : [];
+          return cachedOfficersList;
+        }).finally(() => {
+          cachedOfficersPromise = null;
+        });
+      }
+      await cachedOfficersPromise;
+    }
+
+    if (cachedOfficersList && cachedOfficersList.length > 0) {
+      const match = cachedOfficersList.find(
+        (o: any) =>
+          (o.email && o.email.toLowerCase() === trimmed.toLowerCase()) ||
+          (o.user_id && o.user_id.toLowerCase() === trimmed.toLowerCase()) ||
+          (o.name && o.name.toLowerCase() === trimmed.toLowerCase())
+      );
+      if (match && match.user_id && isUUID(match.user_id)) {
+        return match.user_id;
+      }
+    }
+  } catch (err) {
+    console.warn("[AURA] Could not resolve officer UUID for:", trimmed, err);
+  }
+
+  return null;
+}
+
 function mapAdminOfficerToItem(o: any): FieldOfficerItem {
   const email = o.email || o.user_id || "";
   const name = o.name || email;
@@ -620,6 +669,7 @@ export const auraManagerAPI = {
         params: filterDate ? { filter_date: filterDate } : undefined,
       });
       if (Array.isArray(res.data) && res.data.length > 0) {
+        cachedOfficersList = res.data;
         const field_officers = res.data.map(mapAdminOfficerToItem);
         return { data: { field_officers, count: field_officers.length } };
       }
@@ -659,6 +709,7 @@ export const auraManagerAPI = {
     try {
       const res = await auraClient.get<any[]>("/admin/officers");
       if (Array.isArray(res.data) && res.data.length > 0) {
+        cachedOfficersList = res.data;
         const officers = res.data.map(mapAdminOfficerToFieldOfficer);
         return { data: { officers } };
       }
@@ -669,11 +720,32 @@ export const auraManagerAPI = {
   },
 
   // 17. Live GPS Sessions & Routes from AURA
-  getOfficerSessions: (userId: string) =>
-    auraClient.get<OfficerSession[]>(`/admin/officers/${encodeURIComponent(userId)}/sessions`),
+  getOfficerSessions: async (userIdOrEmail: string) => {
+    const resolvedId = await resolveOfficerUserId(userIdOrEmail);
+    if (!resolvedId) {
+      console.warn(`[AURA] Cannot fetch sessions: '${userIdOrEmail}' is not or could not be resolved to a valid UUID.`);
+      return { data: [] as OfficerSession[] };
+    }
+    return auraClient.get<OfficerSession[]>(`/admin/officers/${encodeURIComponent(resolvedId)}/sessions`);
+  },
 
-  getSessionRoute: (sessionId: string) =>
-    auraClient.get<SessionRouteResponse>(`/admin/sessions/${encodeURIComponent(sessionId)}/route`),
+  getSessionRoute: async (sessionId: string) => {
+    if (!isUUID(sessionId)) {
+      console.warn(`[AURA] Invalid session ID '${sessionId}', must be UUID.`);
+      return {
+        data: {
+          session_id: sessionId,
+          started_at: new Date().toISOString(),
+          ended_at: null,
+          total_distance_km: 0,
+          status: "unknown",
+          point_count: 0,
+          points: [],
+        } as SessionRouteResponse,
+      };
+    }
+    return auraClient.get<SessionRouteResponse>(`/admin/sessions/${encodeURIComponent(sessionId)}/route`);
+  },
 
   getAdminOverview: () =>
     auraClient.get<any>("/admin/overview"),
@@ -699,52 +771,46 @@ export const auraManagerAPI = {
     let actual_stops: ActualVisitStop[] = [];
 
     try {
-      let targetUserId = emailOrId;
-      const officersRes = await auraClient.get<any[]>("/admin/officers");
-      const officersList: any[] = officersRes.data || [];
-      const match = officersList.find(
-        (o: any) => o.email === emailOrId || o.user_id === emailOrId
-      );
-      if (match) targetUserId = match.user_id;
+      let targetSessionId = params.session_id && isUUID(params.session_id) ? params.session_id : undefined;
 
-      if (targetUserId) {
-        const sessRes = await auraClient.get<OfficerSession[]>(`/admin/officers/${encodeURIComponent(targetUserId)}/sessions`);
-        const sessions = sessRes.data || [];
-
-        let targetSession: OfficerSession | undefined;
-        if (params.session_id) {
-          targetSession = sessions.find((s) => s.id === params.session_id);
-        } else if (sessions.length > 0) {
-          targetSession = sessions[0];
-        }
-
-        if (targetSession) {
-          const routeRes = await auraClient.get<SessionRouteResponse>(`/admin/sessions/${encodeURIComponent(targetSession.id)}/route`);
-          const points = routeRes.data?.points || [];
-
-          location_points = points.map((p) => ({
-            lat: p.latitude,
-            lng: p.longitude,
-            timestamp: p.recorded_at,
-            speed_kmh: Math.round((p.speed_mps || 0) * 3.6),
-          }));
-
-          if (location_points.length > 0) {
-            actual_stops = [
-              {
-                visit_id: targetSession.id,
-                customer_id: targetSession.id,
-                customer_name: `AURA Tracked Session #${targetSession.session_number} (${targetSession.total_distance_km || 0} km)`,
-                village: "Tracked Field Route",
-                checkin_time: new Date(targetSession.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                checkout_time: targetSession.ended_at ? new Date(targetSession.ended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : undefined,
-                duration_minutes: targetSession.duration_seconds ? Math.round(targetSession.duration_seconds / 60) : 0,
-                checkin_lat: location_points[0].lat,
-                checkin_lng: location_points[0].lng,
-                status: "verified",
-              },
-            ];
+      if (!targetSessionId) {
+        const targetUserId = await resolveOfficerUserId(emailOrId);
+        if (targetUserId) {
+          const sessRes = await auraClient.get<OfficerSession[]>(`/admin/officers/${encodeURIComponent(targetUserId)}/sessions`);
+          const sessions = sessRes.data || [];
+          if (sessions.length > 0) {
+            targetSessionId = sessions[0].id;
           }
+        }
+      }
+
+      if (targetSessionId && isUUID(targetSessionId)) {
+        const routeRes = await auraClient.get<SessionRouteResponse>(`/admin/sessions/${encodeURIComponent(targetSessionId)}/route`);
+        const data = routeRes.data;
+        const points = data?.points || [];
+
+        location_points = points.map((p) => ({
+          lat: p.latitude,
+          lng: p.longitude,
+          timestamp: p.recorded_at,
+          speed_kmh: Math.round((p.speed_mps || 0) * 3.6),
+        }));
+
+        if (location_points.length > 0) {
+          actual_stops = [
+            {
+              visit_id: targetSessionId,
+              customer_id: targetSessionId,
+              customer_name: `AURA Tracked Session (${data?.total_distance_km ?? 0} km)`,
+              village: "Tracked Field Route",
+              checkin_time: data?.started_at ? new Date(data.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A",
+              checkout_time: data?.ended_at ? new Date(data.ended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : undefined,
+              duration_minutes: 0,
+              checkin_lat: location_points[0].lat,
+              checkin_lng: location_points[0].lng,
+              status: "verified",
+            },
+          ];
         }
       }
     } catch (err) {

@@ -282,7 +282,13 @@ export default function TeamTargetsTab({ selectedFoEmail, selectedMonth, onViewR
       : 0;
 
   const displayedOfficers =
-    selectedFoEmail === "all" ? officers : officers.filter((o) => o.fo_user_id === selectedFoEmail);
+    selectedFoEmail === "all"
+      ? officers
+      : officers.filter(
+          (o) =>
+            o.fo_user_id === selectedFoEmail ||
+            (o.email && o.email.toLowerCase() === selectedFoEmail.toLowerCase())
+        );
 
   const columns: GridColDef[] = [
     {
